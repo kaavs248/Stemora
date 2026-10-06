@@ -267,6 +267,198 @@ describe("SampleRegistry", function () {
       newCustodian.address
     );
   });
+  it("Should complete the full valid lifecycle", async function () {
+
+  const registry = await deployRegistry();
+
+  const sampleId = "SMP-LIFECYCLE-001";
+
+  const metadataHash =
+    ethers.keccak256(
+      ethers.toUtf8Bytes("full-lifecycle")
+    );
+
+  await registry.registerSample(
+    sampleId,
+    "DONOR-LIFECYCLE-001",
+    metadataHash
+  );
+
+  const validTransitions = [1, 2, 3, 4, 3, 5, 6];
+
+  for (const nextStatus of validTransitions) {
+    await registry.updateStatus(
+      sampleId,
+      nextStatus
+    );
+  }
+
+  const sample =
+    await registry.getSample(sampleId);
+
+  expect(sample[2]).to.equal(6n);
+});
+it("Should reject skipping lifecycle stages", async function () {
+
+  const registry = await deployRegistry();
+
+  const sampleId = "SMP-LIFECYCLE-002";
+
+  const metadataHash =
+    ethers.keccak256(
+      ethers.toUtf8Bytes("skip-stage")
+    );
+
+  await registry.registerSample(
+    sampleId,
+    "DONOR-LIFECYCLE-002",
+    metadataHash
+  );
+
+  await expect(
+    registry.updateStatus(sampleId, 3)
+  ).to.be.revertedWith(
+    "Invalid lifecycle transition"
+  );
+});
+it("Should reject changing a destroyed sample", async function () {
+
+  const registry = await deployRegistry();
+
+  const sampleId = "SMP-LIFECYCLE-004";
+
+  const metadataHash =
+    ethers.keccak256(
+      ethers.toUtf8Bytes("destroyed-sample")
+    );
+
+  await registry.registerSample(
+    sampleId,
+    "DONOR-LIFECYCLE-004",
+    metadataHash
+  );
+
+  await registry.updateStatus(sampleId, 1);
+  await registry.updateStatus(sampleId, 2);
+  await registry.updateStatus(sampleId, 3);
+  await registry.updateStatus(sampleId, 5);
+  await registry.updateStatus(sampleId, 6);
+
+  await expect(
+    registry.updateStatus(sampleId, 3)
+  ).to.be.revertedWith(
+    "Invalid lifecycle transition"
+  );
+});
+it("Should emit custody transfer event", async function () {
+
+  const registry = await deployRegistry();
+
+  const [operator, newCustodian] =
+    await ethers.getSigners();
+
+  const sampleId = "SMP-CUSTODY-002";
+
+  const metadataHash =
+    ethers.keccak256(
+      ethers.toUtf8Bytes("custody-event")
+    );
+
+  await registry.registerSample(
+    sampleId,
+    "DONOR-CUSTODY-002",
+    metadataHash
+  );
+
+  await expect(
+    registry.transferCustody(
+      sampleId,
+      newCustodian.address
+    )
+  ).to.emit(
+    registry,
+    "SampleCustodianChanged"
+  );
+});
+it("Should reject transferring custody to zero address", async function () {
+
+  const registry = await deployRegistry();
+
+  const sampleId = "SMP-CUSTODY-003";
+
+  const metadataHash =
+    ethers.keccak256(
+      ethers.toUtf8Bytes("zero-custodian")
+    );
+
+  await registry.registerSample(
+    sampleId,
+    "DONOR-CUSTODY-003",
+    metadataHash
+  );
+
+  await expect(
+    registry.transferCustody(
+      sampleId,
+      ethers.ZeroAddress
+    )
+  ).to.be.revertedWith(
+    "Invalid custodian"
+  );
+});
+it("Should reject custody transfer by non-custodian", async function () {
+
+  const registry = await deployRegistry();
+
+  const [operator, otherAccount] =
+    await ethers.getSigners();
+
+  // Get the AccessRoles contract used by the registry
+  const accessRolesAddress =
+    await registry.accessRoles();
+
+  const accessRoles =
+    await ethers.getContractAt(
+      "AccessRoles",
+      accessRolesAddress
+    );
+
+  const bankOperatorRole =
+    await accessRoles.BANK_OPERATOR_ROLE();
+
+  // Make otherAccount a bank operator,
+  // but NOT the sample custodian.
+  await accessRoles.grantRole(
+    bankOperatorRole,
+    otherAccount.address
+  );
+
+  const sampleId = "SMP-CUSTODY-004";
+
+  const metadataHash =
+    ethers.keccak256(
+      ethers.toUtf8Bytes("unauthorized-custody")
+    );
+
+  // operator registers the sample and therefore becomes custodian
+  await registry.registerSample(
+    sampleId,
+    "DONOR-CUSTODY-004",
+    metadataHash
+  );
+
+  // otherAccount is a bank operator but NOT the custodian
+  await expect(
+    registry
+      .connect(otherAccount)
+      .transferCustody(
+        sampleId,
+        otherAccount.address
+      )
+  ).to.be.revertedWith(
+    "Not authorized"
+  );
+});
 });
 
 
@@ -1184,4 +1376,6 @@ describe("AccessRoles", function () {
       "Invalid account"
     );
   });
+  
+
 });
