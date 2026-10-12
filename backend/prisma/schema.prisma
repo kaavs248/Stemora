@@ -1,0 +1,193 @@
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  ADMIN
+  DONOR
+  RESEARCHER
+}
+
+enum VerificationStatus {
+  PENDING
+  VERIFIED
+  SUSPENDED
+}
+
+enum SampleType {
+  CORD_BLOOD
+  BONE_MARROW
+  PERIPHERAL_BLOOD
+  ADIPOSE_TISSUE
+  OTHER
+}
+
+enum SampleStatus {
+  COLLECTED
+  PROCESSING
+  TESTING
+  STORED
+  TRANSFERRED
+  RELEASED
+  DESTROYED
+  QUARANTINED
+}
+
+enum ConsentStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REVOKED
+  EXPIRED
+}
+
+model User {
+  id           String      @id @default(uuid())
+  email        String      @unique
+  passwordHash String
+  role         Role        @default(DONOR)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  donor        Donor?
+  researcher   Researcher?
+}
+
+model Donor {
+  id        String    @id @default(uuid())
+  userId    String    @unique
+  user      User      @relation(fields: [userId], references: [id])
+  donorCode String    @unique
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  samples   Sample[]
+  consents  Consent[]
+}
+
+model Organization {
+  id                 String             @id @default(uuid())
+  name               String
+  type               String
+  verificationStatus VerificationStatus @default(PENDING)
+  createdAt          DateTime           @default(now())
+  researchers        Researcher[]
+}
+
+model Researcher {
+  id                 String             @id @default(uuid())
+  userId             String             @unique
+  user               User               @relation(fields: [userId], references: [id])
+  researcherCode     String             @unique
+  organizationId     String
+  organization       Organization       @relation(fields: [organizationId], references: [id])
+  verificationStatus VerificationStatus @default(PENDING)
+  createdAt          DateTime           @default(now())
+  accessRequests     AccessRequest[]
+  accessGrants       AccessGrant[]
+}
+
+model Sample {
+  id              String           @id @default(uuid())
+  sampleCode      String           @unique
+  donorId         String
+  donor           Donor            @relation(fields: [donorId], references: [id])
+  sampleType      SampleType
+  currentStatus   SampleStatus     @default(COLLECTED)
+  collectionDate  DateTime         @default(now())
+  storageLocation String
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  lifecycleEvents LifecycleEvent[]
+  consents        Consent[]
+  accessRequests  AccessRequest[]
+  documents       Document[]
+}
+
+model LifecycleEvent {
+  id               String       @id @default(uuid())
+  sampleId         String
+  sample           Sample       @relation(fields: [sampleId], references: [id])
+  fromStatus       SampleStatus
+  toStatus         SampleStatus
+  performedBy      String
+  timestamp        DateTime     @default(now())
+  reason           String?
+  metadata         Json?
+  blockchainTxHash String?
+}
+
+model Consent {
+  id                  String        @id @default(uuid())
+  donorId             String
+  donor               Donor         @relation(fields: [donorId], references: [id])
+  sampleId            String
+  sample              Sample        @relation(fields: [sampleId], references: [id])
+  researchAllowed     Boolean       @default(false)
+  clinicalUseAllowed  Boolean       @default(false)
+  commercialUseAllowed Boolean      @default(false)
+  dataSharingAllowed  Boolean       @default(false)
+  status              ConsentStatus @default(ACTIVE)
+  version             Int           @default(1)
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+}
+
+model AccessRequest {
+  id             String       @id @default(uuid())
+  sampleId       String
+  sample         Sample       @relation(fields: [sampleId], references: [id])
+  researcherId   String
+  researcher     Researcher   @relation(fields: [researcherId], references: [id])
+  purpose        String
+  requestedAt    DateTime     @default(now())
+  status         RequestStatus @default(PENDING)
+  reviewedBy     String?
+  reviewedAt     DateTime?
+  decisionReason String?
+  accessGrant    AccessGrant?
+}
+
+model AccessGrant {
+  id              String        @id @default(uuid())
+  accessRequestId String        @unique
+  accessRequest   AccessRequest @relation(fields: [accessRequestId], references: [id])
+  sampleId        String
+  researcherId    String
+  researcher      Researcher    @relation(fields: [researcherId], references: [id])
+  grantedAt       DateTime      @default(now())
+  expiresAt       DateTime
+  permissions     String[]
+  revokedAt       DateTime?
+}
+
+model Document {
+  id           String   @id @default(uuid())
+  sampleId     String
+  sample       Sample   @relation(fields: [sampleId], references: [id])
+  documentType String
+  filePath     String
+  fileHash     String
+  uploadedBy   String
+  uploadedAt   DateTime @default(now())
+}
+
+model AuditLog {
+  id               String   @id @default(uuid())
+  actorId          String
+  action           String
+  entityType       String
+  entityId         String
+  timestamp        DateTime @default(now())
+  ipAddress        String?
+  metadata         Json?
+  blockchainTxHash String?
+}

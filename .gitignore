@@ -8,3 +8,15 @@ coverage/
 typechain-types/
 types/
 deployment.json
+# Backend secrets and dependencies
+backend/.env
+backend/.env.*
+!backend/.env.example
+backend/node_modules/
+backend/admin-login.json
+backend/researcher-login.json
+
+# Backend generated files
+backend/dist/
+backend/coverage/
+backend/*.log
