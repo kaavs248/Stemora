@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const prisma = require('../config/prisma').default;
 const { transitionSampleStatus } = require('./lifecycle.controller');
+const { blockchainService } = require('../services/blockchain.service');
 
 const createResponse = () => ({
   statusCode: 200,
@@ -47,8 +48,9 @@ test('returns 409 and writes no history when a concurrent transition wins', asyn
   let auditWrites = 0;
 
   prisma.sample.findUnique = async () => ({
-    id: 'sample-1',
-    currentStatus: 'COLLECTED',
+  id: 'sample-1',
+  sampleCode: 'SC-TEST-001',
+  currentStatus: 'COLLECTED',
   });
   prisma.$transaction = async (callback) => callback({
     sample: {
@@ -71,7 +73,20 @@ test('returns 409 and writes no history when a concurrent transition wins', asyn
       },
     },
   });
+  const originalGetSample = blockchainService.getSample;
+const originalRecordLifecycleEvent = blockchainService.recordLifecycleEvent;
 
+blockchainService.getSample = async () => ({
+  sampleId: 'SC-TEST-001',
+  donorReference: 'DONOR-TEST-001',
+  status: 'COLLECTED',
+  custodian: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
+});
+
+blockchainService.recordLifecycleEvent = async () => ({
+  transactionHash: '0xmock-transaction',
+  blockNumber: 1,
+});
   try {
     const res = createResponse();
     await transitionSampleStatus(
@@ -86,5 +101,7 @@ test('returns 409 and writes no history when a concurrent transition wins', asyn
   } finally {
     prisma.sample.findUnique = originalFindUnique;
     prisma.$transaction = originalTransaction;
+    blockchainService.getSample = originalGetSample;
+    blockchainService.recordLifecycleEvent = originalRecordLifecycleEvent;
   }
 });
