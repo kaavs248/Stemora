@@ -42,7 +42,12 @@ enum ConsentStatus {
   REVOKED
   EXPIRED
 }
-
+enum BlockchainSyncStatus {
+  PENDING
+  SYNCED
+  FAILED
+  RECONCILIATION_REQUIRED
+}
 enum RequestStatus {
   PENDING
   APPROVED
@@ -50,6 +55,7 @@ enum RequestStatus {
   REVOKED
   EXPIRED
 }
+
 
 model User {
   id           String      @id @default(uuid())
@@ -139,6 +145,9 @@ model Consent {
   version             Int           @default(1)
   createdAt           DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
+  blockchainTxHash    String?
+  blockchainRevocationTxHash String?
+  blockchainSyncStatus BlockchainSyncStatus @default(PENDING)
 }
 
 model AccessRequest {

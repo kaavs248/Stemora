@@ -3,6 +3,7 @@ import "dotenv/config";
 import {
   JsonRpcProvider,
   Wallet,
+  NonceManager,
   Contract,
   isAddress,
   keccak256,
@@ -37,7 +38,8 @@ for (const [name, address] of Object.entries(contractAddresses)) {
 }
 
 const provider = new JsonRpcProvider(rpcUrl);
-const wallet = new Wallet(privateKey, provider);
+const baseWallet = new Wallet(privateKey, provider);
+const wallet = new NonceManager(baseWallet);
 
 // Minimal ABIs matching the Solidity contracts.
 // Keep these synchronized with the actual Solidity interfaces.
@@ -113,13 +115,13 @@ async function submitTransaction(
 
 export const blockchainService = {
   async getConnectionInfo() {
-    const network = await provider.getNetwork();
+  const network = await provider.getNetwork();
 
-    return {
-      chainId: network.chainId.toString(),
-      signerAddress: wallet.address,
-    };
-  },
+  return {
+    chainId: network.chainId.toString(),
+    signerAddress: baseWallet.address,
+  };
+},
 
   async registerSample(
     sampleId: string,

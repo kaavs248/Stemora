@@ -55,11 +55,12 @@ async function main() {
     sampleRegistryAddress
   );
 
-  // 4. ConsentManager
-  const consentManager =
-    await ethers.deployContract(
-      "ConsentManager"
-    );
+// 4. ConsentManager
+const consentManager =
+  await ethers.deployContract(
+    "ConsentManager",
+    [accessRolesAddress]
+  );
 
   await consentManager.waitForDeployment();
 

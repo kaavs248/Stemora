@@ -465,16 +465,31 @@ it("Should reject custody transfer by non-custodian", async function () {
 describe("ConsentManager", function () {
 
   async function deployConsentManager() {
+  const [owner] = await ethers.getSigners();
 
-    const consentManager =
-      await ethers.deployContract(
-        "ConsentManager"
-      );
+  const accessRoles =
+    await ethers.deployContract("AccessRoles");
 
-    await consentManager.waitForDeployment();
+  await accessRoles.waitForDeployment();
 
-    return consentManager;
-  }
+  const bankOperatorRole =
+    await accessRoles.BANK_OPERATOR_ROLE();
+
+  await accessRoles.grantRole(
+    bankOperatorRole,
+    owner.address
+  );
+
+  const consentManager =
+    await ethers.deployContract(
+      "ConsentManager",
+      [await accessRoles.getAddress()]
+    );
+
+  await consentManager.waitForDeployment();
+
+  return consentManager;
+}
 
   async function createTestConsent(
     consentManager: any
@@ -538,8 +553,7 @@ describe("ConsentManager", function () {
     );
 
     expect(consent[8]).to.equal(0n);
-  });
-
+ });
   it("Should emit ConsentCreated event", async function () {
 
     const consentManager =
@@ -700,6 +714,35 @@ describe("ConsentManager", function () {
       )
     ).to.equal(false);
   });
+  it("Should reject consent creation by a non-operator", async function () {
+  const [, otherAccount] = await ethers.getSigners();
+  const consentManager = await deployConsentManager();
+
+  await expect(
+    consentManager.connect(otherAccount).createConsent(
+      "CONSENT-UNAUTHORIZED",
+      "SMP-UNAUTHORIZED",
+      "DONOR-001",
+      "ResearchLab-A",
+      "Research",
+      "RESEARCH",
+      1000,
+      2000,
+      ethers.keccak256(ethers.toUtf8Bytes("restriction"))
+    )
+  ).to.be.revertedWith("Not bank operator");
+});
+
+it("Should reject consent revocation by a non-operator", async function () {
+  const [, otherAccount] = await ethers.getSigners();
+  const consentManager = await deployConsentManager();
+
+  await createTestConsent(consentManager);
+
+  await expect(
+    consentManager.connect(otherAccount).revokeConsent("CONSENT-001")
+  ).to.be.revertedWith("Not bank operator");
+});
 });
 
 
@@ -740,9 +783,10 @@ describe("AccessControl", function () {
     await registry.waitForDeployment();
 
     consentManager =
-      await ethers.deployContract(
-        "ConsentManager"
-      );
+  await ethers.deployContract(
+    "ConsentManager",
+    [await accessRoles.getAddress()]
+  );
 
     await consentManager.waitForDeployment();
 
@@ -1376,6 +1420,6 @@ describe("AccessRoles", function () {
       "Invalid account"
     );
   });
-  
+
 
 });

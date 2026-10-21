@@ -1,8 +1,19 @@
- // SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-contract ConsentManager {
+interface IConsentAccessRoles {
+    function hasRole(
+        bytes32 role,
+        address account
+    ) external view returns (bool);
 
+    function BANK_OPERATOR_ROLE()
+        external
+        view
+        returns (bytes32);
+}
+
+contract ConsentManager {
     enum ConsentStatus {
         ACTIVE,
         REVOKED
@@ -21,6 +32,8 @@ contract ConsentManager {
         bytes32 restrictionsHash;
         uint256 updatedAt;
     }
+
+    IConsentAccessRoles public accessRoles;
 
     mapping(string => Consent) private consents;
 
@@ -43,6 +56,27 @@ contract ConsentManager {
         uint256 timestamp
     );
 
+    constructor(address accessRolesAddress) {
+        require(
+            accessRolesAddress != address(0),
+            "Invalid AccessRoles address"
+        );
+
+        accessRoles =
+            IConsentAccessRoles(accessRolesAddress);
+    }
+
+    modifier onlyBankOperator() {
+        require(
+            accessRoles.hasRole(
+                accessRoles.BANK_OPERATOR_ROLE(),
+                msg.sender
+            ),
+            "Not bank operator"
+        );
+        _;
+    }
+
     function createConsent(
         string memory consentId,
         string memory sampleId,
@@ -53,8 +87,7 @@ contract ConsentManager {
         uint256 validFrom,
         uint256 validUntil,
         bytes32 restrictionsHash
-    ) public {
-
+    ) public onlyBankOperator {
         require(
             consents[consentId].updatedAt == 0,
             "Consent already exists"
@@ -142,8 +175,7 @@ contract ConsentManager {
 
     function revokeConsent(
         string memory consentId
-    ) public {
-
+    ) public onlyBankOperator {
         require(
             consents[consentId].updatedAt != 0,
             "Consent does not exist"
