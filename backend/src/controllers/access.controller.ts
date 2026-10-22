@@ -3,6 +3,7 @@ import { Response } from 'express';
 import prisma from '../config/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { evaluateAccessPolicy } from '../services/policy.service';
+import { blockchainService } from '../services/blockchain.service';
 
 export const createAccessRequest = async (
   req: AuthRequest,
@@ -43,7 +44,9 @@ export const createAccessRequest = async (
     });
 
     if (!sample) {
-      return res.status(404).json({ error: 'Sample not found' });
+      return res.status(404).json({
+        error: 'Sample not found',
+      });
     }
 
     const consent = await prisma.consent.findFirst({
@@ -66,8 +69,7 @@ export const createAccessRequest = async (
 
     if (consent.blockchainSyncStatus !== 'SYNCED') {
       return res.status(403).json({
-        error:
-          'Donor consent is awaiting blockchain synchronization',
+        error: 'Donor consent is awaiting blockchain synchronization',
       });
     }
 
@@ -97,7 +99,9 @@ export const createAccessRequest = async (
       message: 'Access request created successfully',
       accessRequest,
     });
-  } catch {
+  } catch (error) {
+    console.error('Error creating access request:', error);
+
     return res.status(500).json({
       error: 'Unable to create access request',
     });
@@ -151,7 +155,9 @@ export const getAccessRequests = async (
     return res.status(403).json({
       error: 'Insufficient permissions',
     });
-  } catch {
+  } catch (error) {
+    console.error('Error retrieving access requests:', error);
+
     return res.status(500).json({
       error: 'Unable to retrieve access requests',
     });
@@ -210,7 +216,9 @@ export const getAccessRequestById = async (
     }
 
     return res.json(request);
-  } catch {
+  } catch (error) {
+    console.error('Error retrieving access request:', error);
+
     return res.status(500).json({
       error: 'Unable to retrieve access request',
     });
@@ -240,8 +248,7 @@ const reviewRequest = async (
       )
     ) {
       return res.status(400).json({
-        error:
-          'decisionReason must be a string of at most 1000 characters',
+        error: 'decisionReason must be a string of at most 1000 characters',
       });
     }
 
@@ -261,25 +268,69 @@ const reviewRequest = async (
       });
     }
 
-    const result = await prisma.$transaction(async (tx) => {
-      if (decision === 'APPROVED') {
-        // Recheck policy at approval time. Consent or permissions
-        // may have changed since the access request was submitted.
-        const policy = await evaluateAccessPolicy(
-          request.sampleId,
-          request.researcherId,
-          request.purpose,
-          tx
-        );
+    let blockchainTxHash: string | undefined;
 
-        if (!policy.allowed) {
-          return {
-            kind: 'policy-denied' as const,
-            reason: policy.reason,
-          };
-        }
+    if (decision === 'APPROVED') {
+      // Check the application-level access policy first.
+      const policy = await evaluateAccessPolicy(
+        request.sampleId,
+        request.researcherId,
+        request.purpose
+      );
+
+      if (!policy.allowed) {
+        return res.status(403).json({
+          error: 'Access policy denied',
+          reason: policy.reason,
+        });
       }
 
+      // Retrieve the sample code and active, synchronized consent.
+      const [sample, consent] = await Promise.all([
+        prisma.sample.findUnique({
+          where: { id: request.sampleId },
+          select: { sampleCode: true },
+        }),
+        prisma.consent.findFirst({
+          where: {
+            sampleId: request.sampleId,
+            status: 'ACTIVE',
+            blockchainSyncStatus: 'SYNCED',
+          },
+          orderBy: { version: 'desc' },
+          select: { id: true },
+        }),
+      ]);
+
+      if (!sample || !consent) {
+        return res.status(403).json({
+          error: 'Sample or synchronized active consent not found',
+        });
+      }
+
+      // Confirm the decision against the deployed smart contract.
+      const blockchainDecision =
+        await blockchainService.checkAccess(
+          request.id,
+          consent.id,
+          sample.sampleCode,
+          'STEMORA_CONSORTIUM',
+          'RESEARCH'
+        );
+
+      blockchainTxHash = blockchainDecision.transactionHash;
+
+      if (!blockchainDecision.granted) {
+        return res.status(403).json({
+          error: 'Blockchain access decision denied',
+          reason: blockchainDecision.reason,
+          transactionHash: blockchainTxHash,
+        });
+      }
+    }
+
+    // Persist the review, grant and audit entry together.
+    const result = await prisma.$transaction(async (tx) => {
       const changed = await tx.accessRequest.updateMany({
         where: {
           id,
@@ -330,6 +381,9 @@ const reviewRequest = async (
               : 'ACCESS_REQUEST_REJECTED',
           entityType: 'AccessRequest',
           entityId: id,
+          ...(blockchainTxHash
+            ? { blockchainTxHash }
+            : {}),
         },
       });
 
@@ -341,17 +395,9 @@ const reviewRequest = async (
       };
     });
 
-    if (result.kind === 'policy-denied') {
-      return res.status(403).json({
-        error: 'Access policy denied',
-        reason: result.reason,
-      });
-    }
-
     if (result.kind === 'already-reviewed') {
       return res.status(409).json({
-        error:
-          'Request was already reviewed; reload and retry',
+        error: 'Request was already reviewed; reload and retry',
       });
     }
 
@@ -362,7 +408,9 @@ const reviewRequest = async (
           : 'Access request rejected successfully',
       accessRequest: result.accessRequest,
     });
-  } catch {
+  } catch (error) {
+    console.error('Error reviewing access request:', error);
+
     return res.status(500).json({
       error: 'Unable to review access request',
     });
@@ -451,7 +499,9 @@ export const revokeAccessRequest = async (
       message: 'Access request successfully revoked',
       accessRequest: result.updated,
     });
-  } catch {
+  } catch (error) {
+    console.error('Error revoking access request:', error);
+
     return res.status(500).json({
       error: 'Unable to revoke access request',
     });

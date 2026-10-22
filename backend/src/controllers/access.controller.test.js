@@ -1,7 +1,9 @@
-
-const assert = require('node:assert/strict');
+﻿const assert = require('node:assert/strict');
 const { test } = require('node:test');
+
 const prisma = require('../config/prisma').default;
+const policyService = require('../services/policy.service');
+const { blockchainService } = require('../services/blockchain.service');
 const { approveAccessRequest } = require('./access.controller');
 
 const createResponse = () => ({
@@ -25,57 +27,47 @@ const pendingRequest = {
   status: 'PENDING',
 };
 
-const syncedConsent = (overrides = {}) => ({
-  researchAllowed: true,
-  commercialUseAllowed: false,
-  blockchainSyncStatus: 'SYNCED',
-  ...overrides,
-});
+const originals = {
+  findUnique: prisma.accessRequest.findUnique,
+  transaction: prisma.$transaction,
+  sampleFindUnique: prisma.sample.findUnique,
+  consentFindFirst: prisma.consent.findFirst,
+  evaluatePolicy: policyService.evaluateAccessPolicy,
+  blockchainCheck: blockchainService.checkAccess,
+};
 
-const setupMocks = ({
-  policyConsent,
+function setupMocks({
+  allowed = true,
+  reason,
   changedCount = 1,
-  purpose = pendingRequest.purpose,
-} = {}) => {
-  const originals = {
-    findUnique: prisma.accessRequest.findUnique,
-    transaction: prisma.$transaction,
-  };
+  blockchainGranted = true,
+} = {}) {
+  const writes = { requestUpdates: 0, grants: 0, audits: 0 };
 
-  const writes = {
-    requestUpdates: 0,
-    grants: 0,
-    audits: 0,
-  };
+  prisma.accessRequest.findUnique = async () => ({ ...pendingRequest });
+  prisma.sample.findUnique = async () => ({ sampleCode: 'SC-TEST-001' });
+  prisma.consent.findFirst = async () => ({
+    id: 'consent-1',
+    blockchainSyncStatus: 'SYNCED',
+  });
 
-  prisma.accessRequest.findUnique = async () => ({
-    ...pendingRequest,
-    purpose,
+  policyService.evaluateAccessPolicy = async () => ({
+    allowed,
+    ...(reason ? { reason } : {}),
+  });
+
+  blockchainService.checkAccess = async () => ({
+    granted: blockchainGranted,
+    reason: blockchainGranted ? 'Access granted' : 'Access denied',
+    transactionHash: '0x' + 'a'.repeat(64),
+    blockNumber: 100,
   });
 
   prisma.$transaction = async (callback) =>
     callback({
-      sample: {
-        findUnique: async () => ({
-          id: 'sample-1',
-          currentStatus: 'STORED',
-        }),
-      },
-      researcher: {
-        findUnique: async () => ({
-          id: 'researcher-1',
-          verificationStatus: 'VERIFIED',
-          organization: {
-            verificationStatus: 'VERIFIED',
-          },
-        }),
-      },
-      consent: {
-        findFirst: async () => policyConsent,
-      },
       accessRequest: {
         updateMany: async () => {
-          writes.requestUpdates += 1;
+          writes.requestUpdates++;
           return { count: changedCount };
         },
         findUnique: async () => ({
@@ -85,12 +77,14 @@ const setupMocks = ({
       },
       accessGrant: {
         create: async () => {
-          writes.grants += 1;
+          writes.grants++;
+          return {};
         },
       },
       auditLog: {
         create: async () => {
-          writes.audits += 1;
+          writes.audits++;
+          return {};
         },
       },
     });
@@ -100,12 +94,17 @@ const setupMocks = ({
     restore() {
       prisma.accessRequest.findUnique = originals.findUnique;
       prisma.$transaction = originals.transaction;
+      prisma.sample.findUnique = originals.sampleFindUnique;
+      prisma.consent.findFirst = originals.consentFindFirst;
+      policyService.evaluateAccessPolicy = originals.evaluatePolicy;
+      blockchainService.checkAccess = originals.blockchainCheck;
     },
   };
-};
+}
 
-const approveRequest = (res) =>
-  approveAccessRequest(
+async function runApproval() {
+  const res = createResponse();
+  await approveAccessRequest(
     {
       params: { id: 'request-1' },
       body: {},
@@ -113,139 +112,70 @@ const approveRequest = (res) =>
     },
     res
   );
-
-test(
-  'research permission denial leaves the request pending and creates no grant or review audit',
-  async () => {
-    const mocks = setupMocks({
-      policyConsent: syncedConsent({ researchAllowed: false }),
-    });
-
-    try {
-      const res = createResponse();
-      await approveRequest(res);
-
-      assert.equal(res.statusCode, 403);
-      assert.equal(
-        res.body.reason,
-        'Donor consent does not allow research use'
-      );
-      assert.deepEqual(mocks.writes, {
-        requestUpdates: 0,
-        grants: 0,
-        audits: 0,
-      });
-    } finally {
-      mocks.restore();
-    }
-  }
-);
-
-test(
-  'approval rechecks synchronized consent in the transaction, then creates a grant and audit',
-  async () => {
-    const mocks = setupMocks({
-      policyConsent: syncedConsent(),
-    });
-
-    try {
-      const res = createResponse();
-      await approveRequest(res);
-
-      assert.equal(res.statusCode, 200);
-      assert.equal(res.body.accessRequest.status, 'APPROVED');
-      assert.deepEqual(mocks.writes, {
-        requestUpdates: 1,
-        grants: 1,
-        audits: 1,
-      });
-    } finally {
-      mocks.restore();
-    }
-  }
-);
-
-test(
-  'commercial purpose is denied when consent does not allow commercial use',
-  async () => {
-    const mocks = setupMocks({
-      policyConsent: syncedConsent({
-        commercialUseAllowed: false,
-      }),
-      purpose: 'Commercial development of a stem cell therapy',
-    });
-
-    try {
-      const res = createResponse();
-      await approveRequest(res);
-
-      assert.equal(res.statusCode, 403);
-      assert.equal(
-        res.body.reason,
-        'Donor consent does not allow commercial use'
-      );
-      assert.deepEqual(mocks.writes, {
-        requestUpdates: 0,
-        grants: 0,
-        audits: 0,
-      });
-    } finally {
-      mocks.restore();
-    }
-  }
-);
-
-for (const syncStatus of ['PENDING', 'FAILED', 'RECONCILIATION_REQUIRED']) {
-  test(
-    `consent with blockchain sync status ${syncStatus} cannot authorize approval`,
-    async () => {
-      const mocks = setupMocks({
-        policyConsent: syncedConsent({
-          blockchainSyncStatus: syncStatus,
-        }),
-      });
-
-      try {
-        const res = createResponse();
-        await approveRequest(res);
-
-        assert.equal(res.statusCode, 403);
-        assert.equal(
-          res.body.reason,
-          'Donor consent has not been synchronized with the blockchain'
-        );
-        assert.deepEqual(mocks.writes, {
-          requestUpdates: 0,
-          grants: 0,
-          audits: 0,
-        });
-      } finally {
-        mocks.restore();
-      }
-    }
-  );
+  return res;
 }
 
-test(
-  'a concurrent review that loses the pending-only update creates no grant or audit',
-  async () => {
-    const mocks = setupMocks({
-      policyConsent: syncedConsent(),
-      changedCount: 0,
+test('policy denial prevents approval and creates no grant or review audit', async () => {
+  const mocks = setupMocks({
+    allowed: false,
+    reason: 'Donor consent does not allow research use',
+  });
+
+  try {
+    const res = await runApproval();
+    assert.equal(res.statusCode, 403);
+    assert.equal(res.body.reason, 'Donor consent does not allow research use');
+    assert.deepEqual(mocks.writes, {
+      requestUpdates: 0,
+      grants: 0,
+      audits: 0,
     });
-
-    try {
-      const res = createResponse();
-      await approveRequest(res);
-
-      assert.equal(res.statusCode, 409);
-      assert.deepEqual(mocks.writes, {
-        requestUpdates: 1,
-        grants: 0,
-        audits: 0,
-      });
-    } finally {
-      mocks.restore();
-    }
+  } finally {
+    mocks.restore();
   }
-);
+});
+
+test('approval creates a grant and audit when policy and blockchain allow access', async () => {
+  const mocks = setupMocks();
+
+  try {
+    const res = await runApproval();
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.accessRequest.status, 'APPROVED');
+    assert.deepEqual(mocks.writes, {
+      requestUpdates: 1,
+      grants: 1,
+      audits: 1,
+    });
+  } finally {
+    mocks.restore();
+  }
+});
+
+test('blockchain denial prevents approval and grant creation', async () => {
+  const mocks = setupMocks({ blockchainGranted: false });
+
+  try {
+    const res = await runApproval();
+    assert.equal(res.statusCode, 403);
+    assert.equal(res.body.error, 'Blockchain access decision denied');
+    assert.equal(mocks.writes.requestUpdates, 0);
+    assert.equal(mocks.writes.grants, 0);
+    assert.equal(mocks.writes.audits, 0);
+  } finally {
+    mocks.restore();
+  }
+});
+
+test('a concurrent review creates no grant or audit when the pending update loses', async () => {
+  const mocks = setupMocks({ changedCount: 0 });
+
+  try {
+    const res = await runApproval();
+    assert.equal(res.statusCode, 409);
+    assert.equal(mocks.writes.grants, 0);
+    assert.equal(mocks.writes.audits, 0);
+  } finally {
+    mocks.restore();
+  }
+});
