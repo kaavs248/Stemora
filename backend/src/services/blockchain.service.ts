@@ -122,6 +122,15 @@ export const blockchainService = {
     signerAddress: baseWallet.address,
   };
 },
+  async getLatestBlockTimestamp(): Promise<number> {
+    const block = await provider.getBlock("latest");
+
+    if (!block) {
+      throw new Error("Unable to retrieve latest blockchain block");
+    }
+
+    return block.timestamp;
+  },
 
   async registerSample(
     sampleId: string,
@@ -218,6 +227,14 @@ export const blockchainService = {
   consentId,
 ),
     );
+  },
+  async isConsentActive(consentId: string): Promise<boolean> {
+    const result = await getContractMethod(
+      consentManager,
+      "isConsentActive",
+    )(consentId);
+
+    return Boolean(result);
   },
 
   async checkAccess(

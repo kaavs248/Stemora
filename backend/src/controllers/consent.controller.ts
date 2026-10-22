@@ -68,7 +68,7 @@ const createBlockchainConsent = async (input: {
   donorCode: string;
   permissions: ConsentPermissions;
 }) => {
-  const validFrom = Math.floor(Date.now() / 1000);
+  const validFrom = await blockchainService.getLatestBlockTimestamp();
 
   return blockchainService.createConsent({
     consentId: input.consentId,
