@@ -57,8 +57,8 @@ const consentManagerAbi = [
 
 const accessControlAbi = [
   "function checkAccess(string requestId, string consentId, string sampleId, string organization, string purpose) returns (bool, string)",
+  "event AccessDecision(string indexed requestId, string indexed consentId, string indexed sampleId, address requester, bool granted, string reason, uint256 timestamp)",
 ];
-
 const auditLoggerAbi = [
   "function recordAudit(string action, string subjectId, string detailsHash) returns (uint256)",
 ];
@@ -237,19 +237,17 @@ export const blockchainService = {
     return Boolean(result);
   },
 
-  async checkAccess(
+    async checkAccess(
     requestId: string,
     consentId: string,
     sampleId: string,
     organization: string,
     purpose: string,
   ) {
-    // This submits a transaction and records an on-chain decision.
-    // Do not treat it alone as authorization to release protected data.
     const tx = await getContractMethod(
-  accessControl,
-  "checkAccess",
-)(
+      accessControl,
+      "checkAccess",
+    )(
       requestId,
       consentId,
       sampleId,
@@ -263,9 +261,36 @@ export const blockchainService = {
       throw new Error("Access decision transaction failed");
     }
 
-    return { transactionHash: tx.hash, blockNumber: receipt.blockNumber };
-  },
+    const decisionEvent = receipt.logs
+      .map((log: any) => {
+        try {
+          return accessControl.interface.parseLog(log);
+        } catch {
+          return null;
+        }
+      })
+      .find(
+        (event: any) =>
+          event?.name === "AccessDecision" &&
+          event.args.requestId === requestId,
+      );
 
+    if (!decisionEvent) {
+      throw new Error(
+        "Blockchain transaction completed without an AccessDecision event",
+      );
+    }
+
+    const granted = Boolean(decisionEvent.args.granted);
+    const reason = String(decisionEvent.args.reason);
+
+    return {
+      granted,
+      reason,
+      transactionHash: tx.hash,
+      blockNumber: receipt.blockNumber,
+    };
+  },
   async recordAudit(action: string, subjectId: string, detailsHash: string) {
     return submitTransaction("Audit logging", () =>
       getContractMethod(auditLogger, "recordAudit")(
