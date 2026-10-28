@@ -60,6 +60,58 @@ interface SampleRecord {
   sampleType?: string;
   currentStatus?: string;
   storageLocation?: string;
+  donorId?: string;
+  donor?: { donorCode?: string };
+  consents?: ConsentRecord[];
+  lifecycleEvents?: LifecycleEventRecord[];
+}
+
+interface ConsentRecord {
+  id: string;
+  donorId?: string;
+  sampleId: string;
+  researchAllowed: boolean;
+  clinicalUseAllowed: boolean;
+  commercialUseAllowed: boolean;
+  dataSharingAllowed: boolean;
+  status: string;
+  version: number;
+  createdAt: string;
+  blockchainSyncStatus: string;
+  blockchainTxHash?: string | null;
+  blockchainRevocationTxHash?: string | null;
+}
+
+interface DonorRecord {
+  id: string;
+  donorCode: string;
+  userId?: string;
+  user?: { email?: string; createdAt?: string };
+  samples?: SampleRecord[];
+  consents?: ConsentRecord[];
+}
+
+interface LifecycleEventRecord {
+  id: string;
+  sampleId: string;
+  fromStatus: string;
+  toStatus: string;
+  performedBy: string;
+  timestamp: string;
+  reason?: string | null;
+  blockchainTxHash?: string | null;
+}
+
+interface AuditRecord {
+  id: string;
+  actorId: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  timestamp: string;
+  ipAddress?: string | null;
+  metadata?: unknown;
+  blockchainTxHash?: string | null;
 }
 
 interface AccessRequestRecord {
@@ -89,6 +141,15 @@ function App() {
   const [authChecking, setAuthChecking] = useState(true);
 
   const [samples, setSamples] = useState<SampleRecord[]>([]);
+  const [donors, setDonors] = useState<DonorRecord[]>([]);
+  const [donorProfile, setDonorProfile] = useState<DonorRecord | null>(null);
+  const [auditLogs, setAuditLogs] = useState<AuditRecord[]>([]);
+  const [lifecycleHistory, setLifecycleHistory] = useState<LifecycleEventRecord[]>([]);
+  const [selectedLifecycleSample, setSelectedLifecycleSample] = useState('');
+  const [lifecycleLoading, setLifecycleLoading] = useState(false);
+  const [viewError, setViewError] = useState('');
+  const [consentBusyId, setConsentBusyId] = useState<string | null>(null);
+  const [consentNotice, setConsentNotice] = useState('');
   const [accessRequests, setAccessRequests] = useState<AccessRequestRecord[]>([]);
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState('');
@@ -137,6 +198,7 @@ function App() {
   // Load live sample and access-request data using the existing API.
   useEffect(() => {
     if (view !== 'workspace' || !user) return;
+    const currentUser = user;
 
     let active = true;
 
@@ -152,9 +214,20 @@ function App() {
             ? Promise.resolve(null)
             : apiGet<AccessRequestRecord[]>('/access-requests');
 
-        const [sampleResult, accessResult] = await Promise.all([
+        const donorPromise = currentUser.role === 'ADMIN'
+          ? apiGet<DonorRecord[]>('/donors')
+          : currentUser.role === 'DONOR'
+            ? apiGet<DonorRecord>('/donors/me')
+            : Promise.resolve(null);
+        const auditPromise = currentUser.role === 'ADMIN'
+          ? apiGet<AuditRecord[]>('/audit')
+          : Promise.resolve(null);
+
+        const [sampleResult, accessResult, donorResult, auditResult] = await Promise.all([
           samplePromise,
           accessPromise,
+          donorPromise,
+          auditPromise,
         ]);
 
         if (!active) return;
@@ -163,7 +236,23 @@ function App() {
           throw new Error('The sample API returned an unexpected response.');
         }
 
-        setSamples(sampleResult);
+        setSamples(
+          currentUser.role === 'DONOR' && donorResult && !Array.isArray(donorResult)
+            ? (donorResult.samples ?? [])
+            : sampleResult,
+        );
+
+        if (Array.isArray(donorResult)) {
+          setDonors(donorResult);
+          setDonorProfile(null);
+        } else if (donorResult) {
+          setDonorProfile(donorResult);
+          setDonors([]);
+        } else {
+          setDonors([]);
+          setDonorProfile(null);
+        }
+        setAuditLogs(Array.isArray(auditResult) ? auditResult : []);
 
         if (accessResult === null) {
           setAccessRequests([]);
@@ -193,6 +282,47 @@ function App() {
       active = false;
     };
   }, [view, user, refreshKey]);
+
+  useEffect(() => {
+    if (view !== 'workspace' || activePage !== 'Lifecycle Tracking' || !selectedLifecycleSample) return;
+    let active = true;
+    apiGet<LifecycleEventRecord[]>(`/lifecycle/${selectedLifecycleSample}`)
+      .then((events) => {
+        if (active) setLifecycleHistory(Array.isArray(events) ? events : []);
+      })
+      .catch((error) => {
+        if (active) setViewError(error instanceof Error ? error.message : 'Unable to load lifecycle history.');
+      })
+      .finally(() => { if (active) setLifecycleLoading(false); });
+    return () => { active = false; };
+  }, [view, activePage, selectedLifecycleSample, refreshKey]);
+
+  const handleConsentUpdate = async (
+    consent: ConsentRecord,
+    field: 'researchAllowed' | 'clinicalUseAllowed' | 'commercialUseAllowed' | 'dataSharingAllowed',
+    value: boolean,
+  ) => {
+    if (user?.role !== 'DONOR' || consent.status !== 'ACTIVE') return;
+    setConsentBusyId(consent.id);
+    setViewError('');
+    setConsentNotice('');
+    try {
+      const result = await apiPatch<{ message?: string; reconciliationRequired?: boolean }>(`/consents/${consent.id}`, {
+        researchAllowed: field === 'researchAllowed' ? value : consent.researchAllowed,
+        clinicalUseAllowed: field === 'clinicalUseAllowed' ? value : consent.clinicalUseAllowed,
+        commercialUseAllowed: field === 'commercialUseAllowed' ? value : consent.commercialUseAllowed,
+        dataSharingAllowed: field === 'dataSharingAllowed' ? value : consent.dataSharingAllowed,
+      });
+      setConsentNotice(result.message ?? (result.reconciliationRequired
+        ? 'Consent update requires administrator reconciliation.'
+        : 'Consent updated successfully.'));
+      setRefreshKey((current) => current + 1);
+    } catch (error) {
+      setViewError(error instanceof Error ? error.message : 'Unable to update consent.');
+    } finally {
+      setConsentBusyId(null);
+    }
+  };
 
   const handleReview = async (
     request: AccessRequestRecord,
@@ -257,6 +387,11 @@ function App() {
     logout();
     setUser(null);
     setSamples([]);
+    setDonors([]);
+    setDonorProfile(null);
+    setAuditLogs([]);
+    setLifecycleHistory([]);
+    setSelectedLifecycleSample('');
     setAccessRequests([]);
     setActivePage('Overview');
     setDashboardError('');
@@ -268,6 +403,10 @@ function App() {
   const pendingAccessCount = accessRequests.filter(
     (request) => request.status === 'PENDING',
   ).length;
+  const consentRecords = user?.role === 'DONOR'
+    ? (donorProfile?.consents ?? [])
+    : samples.flatMap((sample) => sample.consents ?? []);
+  const activeConsentCount = consentRecords.filter((consent) => consent.status === 'ACTIVE').length;
 
   if (authChecking) {
     return (
@@ -393,8 +532,8 @@ function App() {
                     ],
                     [
                       'CONSENT',
-                      '—',
-                      'Summary endpoint not available',
+                      dashboardLoading && consentRecords.length === 0 ? '…' : String(activeConsentCount),
+                      'Active consent records',
                     ],
                     [
                       'PENDING ACCESS',
@@ -460,8 +599,7 @@ function App() {
                 </div>
 
                 <p className="preview-disclaimer">
-                  Sample and access counts come from the authenticated API.
-                  Consent summary is not connected.
+                  Sample, consent and access counts come from the authenticated API.
                 </p>
               </>
             ) : activePage === 'Sample Inventory' ? (
@@ -508,6 +646,111 @@ function App() {
                 >
                   ← Return to overview
                 </button>
+              </section>
+            ) : activePage === 'Donors' ? (
+              <section className="workspace-panel section-view">
+                <span className="section-kicker">DONOR DIRECTORY</span>
+                <h2>{user?.role === 'DONOR' ? 'Your donor profile' : 'Registered donors'}</h2>
+                {user?.role === 'ADMIN' ? (
+                  dashboardLoading ? <p>Loading donor records…</p> : donors.length === 0 ? <p>No donor records are available.</p> : (
+                    <div className="data-table-wrap"><table className="workspace-data-table">
+                      <thead><tr><th>Donor code</th><th>Account</th><th>Samples</th><th>Registered</th></tr></thead>
+                      <tbody>{donors.map((donor) => <tr key={donor.id}>
+                        <td>{donor.donorCode}</td><td>{donor.user?.email ?? '—'}</td>
+                        <td>{donor.samples?.length ?? 0}</td>
+                        <td>{donor.user?.createdAt ? new Date(donor.user.createdAt).toLocaleDateString() : '—'}</td>
+                      </tr>)}</tbody>
+                    </table></div>
+                  )
+                ) : user?.role === 'DONOR' ? (
+                  dashboardLoading ? <p>Loading your donor profile…</p> : donorProfile ? (
+                    <div className="workspace-metrics">
+                      <article className="workspace-metric"><span>DONOR CODE</span><strong>{donorProfile.donorCode}</strong><small>Your pseudonymous bank reference</small></article>
+                      <article className="workspace-metric"><span>REGISTERED SAMPLES</span><strong>{donorProfile.samples?.length ?? 0}</strong><small>Samples associated with your profile</small></article>
+                      <article className="workspace-metric"><span>CONSENT VERSIONS</span><strong>{donorProfile.consents?.length ?? 0}</strong><small>Your consent history</small></article>
+                    </div>
+                  ) : <p>Your donor profile could not be found.</p>
+                ) : <p>The donor directory is available to donor and administrator accounts.</p>}
+              </section>
+            ) : activePage === 'Consent Management' ? (
+              <section className="workspace-panel section-view">
+                <span className="section-kicker">PERMISSIONS & GOVERNANCE</span>
+                <h2>Consent records</h2>
+                {viewError && <div className="workspace-error" role="alert">{viewError}</div>}
+                {consentNotice && <div className="review-success" role="status">{consentNotice}</div>}
+                {user?.role === 'DONOR' || user?.role === 'ADMIN' ? (() => {
+                  const consentRows = user?.role === 'DONOR'
+                    ? (donorProfile?.consents ?? []).map((consent) => ({
+                        consent,
+                        sample: donorProfile?.samples?.find((item) => item.id === consent.sampleId),
+                      }))
+                    : samples.flatMap((sample) => (sample.consents ?? []).map((consent) => ({ sample, consent })));
+                  if (dashboardLoading) return <p>Loading consent records…</p>;
+                  if (consentRows.length === 0) return <p>No consent records are available for the samples returned by the API.</p>;
+                  return <div className="consent-record-list">{consentRows.map(({ sample, consent }) => (
+                    <article className="consent-record" key={consent.id}>
+                      <div className="consent-record-heading">
+                        <div><strong>{sample?.sampleCode ?? 'Sample'}</strong><small>Version {consent.version} · {new Date(consent.createdAt).toLocaleDateString()}</small></div>
+                        <span className={`request-status status-${consent.status.toLowerCase()}`}>{consent.status}</span>
+                      </div>
+                      <p className="consent-sync">Blockchain sync: {consent.blockchainSyncStatus}</p>
+                      <div className="consent-permissions">
+                        {([
+                          ['researchAllowed', 'Research use'],
+                          ['clinicalUseAllowed', 'Clinical use'],
+                          ['commercialUseAllowed', 'Commercial use'],
+                          ['dataSharingAllowed', 'Data sharing'],
+                        ] as const).map(([field, label]) => (
+                          <label key={field}>
+                            <input type="checkbox" checked={consent[field]} disabled={user.role !== 'DONOR' || consent.status !== 'ACTIVE' || consentBusyId === consent.id}
+                              onChange={(event) => void handleConsentUpdate(consent, field, event.target.checked)} />
+                            <span>{label}</span>
+                          </label>
+                        ))}
+                      </div>
+                      {consent.blockchainTxHash && <small className="record-hash">Transaction: {consent.blockchainTxHash}</small>}
+                    </article>
+                  ))}</div>;
+                })() : <p>Consent details are available to donor and administrator accounts.</p>}
+                {user?.role === 'DONOR' && <p className="preview-disclaimer">Changing a permission creates a new consent version. The backend reports whether blockchain synchronization is complete.</p>}
+              </section>
+            ) : activePage === 'Lifecycle Tracking' ? (
+              <section className="workspace-panel section-view">
+                <span className="section-kicker">SAMPLE TRACEABILITY</span>
+                <h2>Lifecycle history</h2>
+                {viewError && <div className="workspace-error" role="alert">{viewError}</div>}
+                {(user?.role === 'DONOR' ? (donorProfile?.samples ?? []) : samples).length === 0 ? <p>No samples are available to trace.</p> : <>
+                  <label className="sample-select-label" htmlFor="lifecycle-sample">Select a sample</label>
+                  <select id="lifecycle-sample" className="lifecycle-sample-select" value={selectedLifecycleSample}
+                    onChange={(event) => { setSelectedLifecycleSample(event.target.value); setLifecycleHistory([]); setLifecycleLoading(Boolean(event.target.value)); setViewError(''); }}>
+                    <option value="">Choose a sample</option>
+                    {(user?.role === 'DONOR' ? (donorProfile?.samples ?? []) : samples).map((sample) => <option key={sample.id} value={sample.id}>{sample.sampleCode} · {sample.currentStatus}</option>)}
+                  </select>
+                  {lifecycleLoading ? <p>Loading lifecycle events…</p> : selectedLifecycleSample && lifecycleHistory.length === 0 ? <p>No lifecycle events are recorded for this sample.</p> : lifecycleHistory.length > 0 && (
+                    <div className="data-table-wrap"><table className="workspace-data-table">
+                      <thead><tr><th>Recorded</th><th>Transition</th><th>Reason</th><th>Recorded by</th><th>Blockchain transaction</th></tr></thead>
+                      <tbody>{lifecycleHistory.map((event) => <tr key={event.id}>
+                        <td>{new Date(event.timestamp).toLocaleString()}</td><td>{event.fromStatus} → {event.toStatus}</td>
+                        <td>{event.reason ?? '—'}</td><td>{event.performedBy}</td><td>{event.blockchainTxHash ?? '—'}</td>
+                      </tr>)}</tbody>
+                    </table></div>
+                  )}
+                </>}
+                {user?.role === 'ADMIN' && <p className="preview-disclaimer">Status transitions are recorded through the backend lifecycle route; this view displays the returned history.</p>}
+              </section>
+            ) : activePage === 'Audit Trail' ? (
+              <section className="workspace-panel section-view">
+                <span className="section-kicker">SYSTEM ACCOUNTABILITY</span>
+                <h2>Audit trail</h2>
+                {user?.role !== 'ADMIN' ? <p>Audit records are restricted to administrator accounts.</p> : dashboardLoading ? <p>Loading audit records…</p> : auditLogs.length === 0 ? <p>No audit records are available.</p> : (
+                  <div className="data-table-wrap"><table className="workspace-data-table">
+                    <thead><tr><th>Recorded</th><th>Action</th><th>Entity</th><th>Actor</th><th>Blockchain transaction</th></tr></thead>
+                    <tbody>{auditLogs.map((log) => <tr key={log.id}>
+                      <td>{new Date(log.timestamp).toLocaleString()}</td><td>{log.action}</td>
+                      <td>{log.entityType} · {log.entityId}</td><td>{log.actorId}</td><td>{log.blockchainTxHash ?? '—'}</td>
+                    </tr>)}</tbody>
+                  </table></div>
+                )}
               </section>
             ) : activePage === 'Access Requests' ? (
               <section className="workspace-panel section-view">

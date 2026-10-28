@@ -618,3 +618,22 @@ button:focus-visible, a:focus-visible { outline: 3px solid #6caa83; outline-offs
   color: #657583;
   font-size: 12px;
 }
+
+/* Role-aware donor, consent, lifecycle and audit views */
+.consent-record-list { display: grid; gap: 14px; margin: 20px 0; }
+.consent-record { border: 1px solid #e5e8df; border-radius: 12px; padding: 18px; background: #fff; }
+.consent-record-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.consent-record-heading > div { display: grid; gap: 5px; }
+.consent-record-heading strong { color: #243f32; }
+.consent-record-heading small, .consent-sync, .record-hash { color: #65756d; font-size: 12px; }
+.consent-sync { margin: 12px 0; }
+.consent-permissions { display: flex; flex-wrap: wrap; gap: 10px 18px; }
+.consent-permissions label { display: inline-flex; align-items: center; gap: 7px; color: #31463c; font-size: 13px; }
+.consent-permissions input { accent-color: #246849; }
+.record-hash { display: block; margin-top: 14px; overflow-wrap: anywhere; }
+.sample-select-label { display: block; margin: 18px 0 7px; color: #557965; font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; }
+.lifecycle-sample-select { max-width: 460px; width: 100%; padding: 11px 12px; border: 1px solid #d8e0d8; border-radius: 8px; background: #fff; color: #31463c; font: inherit; }
+@media (max-width: 640px) {
+  .consent-record-heading { flex-direction: column; }
+  .consent-permissions { display: grid; }
+}
